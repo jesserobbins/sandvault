@@ -231,6 +231,28 @@ ensure_brew() {
 ensure_brew_tool() {
     local tool="$1"
     local cli_name="${2:-$tool}"
+
+    # If running as host user and CLI exists in PATH, copy it to sandvault user
+    if [[ "$NESTED" == "false" ]]; then
+        local host_cli
+        host_cli="$(command -v "$cli_name" 2>/dev/null || true)"
+        if [[ -n "$host_cli" && -x "$host_cli" ]]; then
+            local sandvault_bin_dir
+            sandvault_bin_dir="/Users/$SANDVAULT_USER/.local/bin"
+            debug "Copying $cli_name from $host_cli to $sandvault_bin_dir"
+            sudo mkdir -p "$sandvault_bin_dir"
+            sudo cp "$host_cli" "$sandvault_bin_dir/$cli_name"
+            sudo chmod 755 "$sandvault_bin_dir/$cli_name"
+            return 0
+        fi
+    fi
+
+    # If CLI is already in PATH (e.g., in sandbox), use it
+    if command -v "$cli_name" &>/dev/null; then
+        debug "Using $cli_name from PATH"
+        return 0
+    fi
+
     # shellcheck disable=SC2310 # brew_shellenv intentionally used in || condition
     brew_shellenv || true
 
@@ -316,7 +338,7 @@ init_sandbox_run_for_repository() {
         "HOME=/Users/$SANDVAULT_USER"
         "USER=$SANDVAULT_USER"
         "SHELL=/bin/zsh"
-        "PATH=/usr/bin:/bin:/usr/sbin:/sbin"
+        "PATH=/Users/jesse/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
     )
 }
 
