@@ -237,12 +237,21 @@ ensure_brew_tool() {
         local host_cli
         host_cli="$(command -v "$cli_name" 2>/dev/null || true)"
         if [[ -n "$host_cli" && -x "$host_cli" ]]; then
-            local sandvault_bin_dir
+            local sandvault_bin_dir sandvault_cli host_hash sandvault_hash
             sandvault_bin_dir="/Users/$SANDVAULT_USER/.local/bin"
+            sandvault_cli="$sandvault_bin_dir/$cli_name"
+
+            # Check if binary already exists and is identical
+            if [[ -x "$sandvault_cli" ]] && cmp -s "$host_cli" "$sandvault_cli" 2>/dev/null; then
+                debug "Using $cli_name (already copied)"
+                return 0
+            fi
+
+            # Need sudo because sandvault-jesse owns their home directory and we don't have write access
             debug "Copying $cli_name from $host_cli to $sandvault_bin_dir"
             sudo mkdir -p "$sandvault_bin_dir"
-            sudo cp "$host_cli" "$sandvault_bin_dir/$cli_name"
-            sudo chmod 755 "$sandvault_bin_dir/$cli_name"
+            sudo cp "$host_cli" "$sandvault_cli"
+            sudo chmod 755 "$sandvault_cli"
             return 0
         fi
     fi
