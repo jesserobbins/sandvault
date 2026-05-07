@@ -2,6 +2,11 @@
 
 All notable user-facing changes to SandVault are documented in this file.
 
+## [Unreleased]
+
+### Added
+- Document supervised worker dispatch pattern (`docs/patterns/sv-dispatch.md`) — how to delegate a bounded task from a supervising AI agent to a sandboxed worker, monitor it cheaply through tmux, and bring the result back
+
 ## [1.11.0] - 2026-04-20
 
 ### Fixed
