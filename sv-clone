@@ -9,15 +9,19 @@
 # After cloning, it launches an sv session in the cloned repository.
 #
 # Usage:
-#   sv-clone [-v|-vv|-vvv] <URL|PATH> [-- sv-args ...]
+#   sv-clone [-v|-vv|-vvv] [options] <URL|PATH> [-- sv-args ...]
+#
+# Options:
+#   -k, --repo-deploy-key    Create a read-only deploy key and upload to GitHub
+#   -w, --allow-repo-write   Allow the deploy key to push (implies -k)
 #
 # Everything after -- is passed directly to sv (options, command, args).
 # If no command is given, defaults to "shell".
 #
 # Examples:
 #   sv-clone https://github.com/org/repo.git
-#   sv-clone git@github.com:org/repo.git -- claude
-#   sv-clone ~/projects/myrepo -- -b shell -- echo hello
+#   sv-clone -k git@github.com:org/repo.git -- claude
+#   sv-clone -w ~/projects/myrepo -- -b shell -- echo hello
 set -Eeuo pipefail
 trap 'echo >&2 "${BASH_SOURCE[0]}: line $LINENO: $BASH_COMMAND: exitcode $?"' ERR
 
@@ -57,9 +61,11 @@ source "$WORKSPACE/helpers/sv-logging.sh"
 ###############################################################################
 CLONE_REPOSITORY=""
 SV_ARGS=()
+DEPLOY_KEY=false
+DEPLOY_KEY_WRITE=false
 
 if [[ $# -lt 1 ]]; then
-    echo >&2 "Usage: $(basename "$0") [OPTIONS] <URL|PATH> [-- sv-args ...]"
+    echo >&2 "Usage: $(basename "$0") [-v|-vv|-vvv] [options] <URL|PATH> [-- sv-args ...]"
     exit 1
 fi
 
@@ -82,16 +88,29 @@ while [[ $# -gt 0 ]]; do
             ((SV_VERBOSE+=3)) || true
             shift
             ;;
+        -k|--repo-deploy-key)
+            DEPLOY_KEY=true
+            shift
+            ;;
+        -w|--allow-repo-write)
+            DEPLOY_KEY=true
+            DEPLOY_KEY_WRITE=true
+            shift
+            ;;
         -h|--help)
-            echo "Usage: $(basename "$0") [-v|-vv|-vvv] <URL|PATH> [-- sv-args ...]"
+            echo "Usage: $(basename "$0") [-v|-vv|-vvv] [options] <URL|PATH> [-- sv-args ...]"
             echo ""
             echo "Clone a git repository into the sandvault shared workspace and"
             echo "launch an sv session there."
             echo ""
             echo "Options:"
-            echo "  -v, --verbose   Enable verbose output"
-            echo "  -vv / -vvv      More verbose / even more verbose"
-            echo "  -h, --help      Show this help message"
+            echo "  -k, --repo-deploy-key   Create a deploy key for this repo and upload it"
+            echo "                          to GitHub (read-only)"
+            echo "  -w, --allow-repo-write  Allow the deploy key to push to this repo"
+            echo "                          (implies --repo-deploy-key)"
+            echo "  -v, --verbose           Enable verbose output"
+            echo "  -vv / -vvv              More verbose / even more verbose"
+            echo "  -h, --help              Show this help message"
             echo ""
             echo "Everything after -- is passed directly to sv."
             echo "If no sv command is given, defaults to 'shell'."
@@ -189,19 +208,22 @@ info "Repository ready at $REPO_DIR"
 
 
 ###############################################################################
-# Deploy key — auto-generated for GitHub repositories
+# Deploy key — opt-in for GitHub repositories
 ###############################################################################
-# The sandvault user has no credentials. For any GitHub repo (cloned via SSH,
-# HTTPS, or local path), generate a per-repo ED25519 deploy key so the sandbox
-# can push/pull. The origin remote is rewritten to SSH so the deploy key works.
-# Keys are stored in $SV_PRIVATE_DIR/.ssh/ — outside the repo working tree,
-# accessible to both users via group ACLs.
+# The sandvault user has no credentials. When -k/--repo-deploy-key (or
+# -w/--allow-repo-write) is given, generate a per-repo ED25519 deploy key so
+# the sandbox can pull (and, with -w, push). The key is uploaded read-only by
+# default; sandvault runs agents in bypass-permissions mode, so write access is
+# never granted unless explicitly requested. The origin remote is rewritten to
+# SSH only after the key is uploaded, so a public repo that cloned over HTTPS
+# can still fetch if the upload fails. Keys are stored in $SV_PRIVATE_DIR/.ssh/
+# — outside the repo working tree, accessible to both users via group ACLs.
 
 # Extract owner/repo from origin URL (works for SSH, HTTPS, and local clones
 # whose origin points to GitHub)
 ORIGIN_URL="$(git -C "$REPO_DIR" remote get-url origin 2>/dev/null || true)"
 GITHUB_REPO_PATH=""
-if [[ -n "$ORIGIN_URL" ]]; then
+if [[ "$DEPLOY_KEY" == true && -n "$ORIGIN_URL" ]]; then
     # Normalize: strip protocol/host prefixes and .git suffix
     GITHUB_REPO_PATH="$ORIGIN_URL"
     GITHUB_REPO_PATH="${GITHUB_REPO_PATH#https://github.com/}"
@@ -228,6 +250,9 @@ if [[ -n "$GITHUB_REPO_PATH" ]]; then
     DEPLOY_KEY_PRIV="$DEPLOY_KEY_DIR/$DEPLOY_KEY_NAME"
     DEPLOY_KEY_PUB="$DEPLOY_KEY_PRIV.pub"
 
+    DEPLOY_KEY_TITLE="sandvault-deploy-${REPOSITORY_NAME}@${HOSTNAME}"
+    DEPLOY_SSH_URL="git@github.com:${GITHUB_REPO_PATH}.git"
+
     if [[ ! -f "$DEPLOY_KEY_PRIV" ]]; then
         mkdir -p "$DEPLOY_KEY_DIR"
         chmod 0700 "$DEPLOY_KEY_DIR"
@@ -235,41 +260,78 @@ if [[ -n "$GITHUB_REPO_PATH" ]]; then
             -f "$DEPLOY_KEY_PRIV" \
             -N "" \
             -q \
-            -C "sandvault-deploy-${REPOSITORY_NAME}@${HOSTNAME}"
+            -C "$DEPLOY_KEY_TITLE"
         info "Generated deploy key for $REPOSITORY_NAME"
     else
         debug "Deploy key already exists for $REPOSITORY_NAME"
     fi
 
-    # Rewrite origin to SSH so the deploy key is used for push/pull
-    DEPLOY_SSH_URL="git@github.com:${GITHUB_REPO_PATH}.git"
-    if [[ "$ORIGIN_URL" != "$DEPLOY_SSH_URL" ]]; then
-        git -C "$REPO_DIR" remote set-url origin "$DEPLOY_SSH_URL"
-        debug "Rewrote origin to $DEPLOY_SSH_URL"
-    fi
-
-    # Configure this repo to use its deploy key (persists in .git/config)
-    git -C "$REPO_DIR" config core.sshCommand \
-        "ssh -i '$DEPLOY_KEY_PRIV' -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+    # Rewrite origin to SSH and configure the deploy key. Only call this once
+    # the key is confirmed present on GitHub, so a failed upload can't leave a
+    # public HTTPS clone unable to fetch. Sets DEPLOY_KEY_ACTIVE so the summary
+    # below reports what is actually true.
+    DEPLOY_KEY_ACTIVE=false
+    activate_deploy_key() {
+        if [[ "$ORIGIN_URL" != "$DEPLOY_SSH_URL" ]]; then
+            git -C "$REPO_DIR" remote set-url origin "$DEPLOY_SSH_URL"
+            debug "Rewrote origin to $DEPLOY_SSH_URL"
+        fi
+        git -C "$REPO_DIR" config core.sshCommand \
+            "ssh -i '$DEPLOY_KEY_PRIV' -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+        DEPLOY_KEY_ACTIVE=true
+    }
 
     # Upload deploy key to GitHub via gh CLI, or show it for manual addition
     if command -v gh &>/dev/null && gh auth status &>/dev/null; then
-        if gh repo deploy-key add "$DEPLOY_KEY_PUB" \
-            --allow-write \
-            --title "sandvault-deploy-${REPOSITORY_NAME}@${HOSTNAME}" \
-            -R "$GITHUB_REPO_PATH" 2>/dev/null; then
-            info "Deploy key added to $GITHUB_REPO_PATH (write access enabled)"
+        ADD_ARGS=(--title "$DEPLOY_KEY_TITLE" -R "$GITHUB_REPO_PATH")
+        [[ "$DEPLOY_KEY_WRITE" == true ]] && ADD_ARGS+=(--allow-write)
+
+        if gh repo deploy-key add "$DEPLOY_KEY_PUB" "${ADD_ARGS[@]}" 2>/dev/null; then
+            activate_deploy_key
+            if [[ "$DEPLOY_KEY_WRITE" == true ]]; then
+                info "Deploy key added to $GITHUB_REPO_PATH (write access enabled)"
+            else
+                info "Deploy key added to $GITHUB_REPO_PATH (read-only)"
+            fi
         else
-            warn "Could not add deploy key via gh CLI (may already exist or check repo permissions)"
-            echo ""
-            info "Deploy key for $REPOSITORY_NAME — add manually:"
-            echo "──────────────────────────────────────────────────────────"
-            cat "$DEPLOY_KEY_PUB"
-            echo "──────────────────────────────────────────────────────────"
-            info "https://github.com/$GITHUB_REPO_PATH/settings/keys"
-            echo ""
+            # Add failed — most often because a key with this title already
+            # exists (re-run). Look it up by title to decide what to do.
+            EXISTING_KEY_ID="$(gh repo deploy-key list -R "$GITHUB_REPO_PATH" \
+                --json id,title --jq \
+                ".[] | select(.title == \"$DEPLOY_KEY_TITLE\") | .id" 2>/dev/null || true)"
+
+            if [[ -z "$EXISTING_KEY_ID" ]]; then
+                # Key is genuinely absent: the failure was real (permissions,
+                # network). Don't rewrite origin — show the key for manual setup.
+                warn "Could not add deploy key via gh CLI (check repo permissions)"
+                echo ""
+                info "Deploy key for $REPOSITORY_NAME — add manually:"
+                echo "──────────────────────────────────────────────────────────"
+                cat "$DEPLOY_KEY_PUB"
+                echo "──────────────────────────────────────────────────────────"
+                info "https://github.com/$GITHUB_REPO_PATH/settings/keys"
+                echo ""
+            elif [[ "$DEPLOY_KEY_WRITE" == true ]]; then
+                # Upgrade read-only → write: GitHub cannot edit a key's
+                # permission in place, so delete and re-add with write.
+                if gh repo deploy-key delete "$EXISTING_KEY_ID" -R "$GITHUB_REPO_PATH" 2>/dev/null \
+                    && gh repo deploy-key add "$DEPLOY_KEY_PUB" "${ADD_ARGS[@]}" 2>/dev/null; then
+                    activate_deploy_key
+                    info "Deploy key for $GITHUB_REPO_PATH upgraded to write access"
+                else
+                    warn "Could not upgrade deploy key to write access for $GITHUB_REPO_PATH"
+                fi
+            else
+                # Key already present and read-only is all we need: re-wire
+                # origin so a re-run reconfigures the clone in place.
+                activate_deploy_key
+                debug "Deploy key already present on $GITHUB_REPO_PATH (read-only)"
+            fi
         fi
     else
+        # No gh CLI: show the key for manual setup but leave origin on its
+        # original URL, so a public HTTPS clone keeps working until the user
+        # adds the key themselves.
         echo ""
         info "Deploy key for $REPOSITORY_NAME — add manually (or install gh CLI for auto-setup):"
         echo "──────────────────────────────────────────────────────────"
@@ -277,7 +339,17 @@ if [[ -n "$GITHUB_REPO_PATH" ]]; then
         echo "──────────────────────────────────────────────────────────"
         info "https://github.com/$GITHUB_REPO_PATH/settings/keys"
         info "  (Enable \"Allow write access\" to push)"
+        info "  Re-run sv-clone -k after adding the key to switch origin to SSH."
         echo ""
+    fi
+
+    # Capability summary — only when the deploy key is actually wired up
+    if [[ "$DEPLOY_KEY_ACTIVE" == true ]]; then
+        if [[ "$DEPLOY_KEY_WRITE" == true ]]; then
+            info "Sandbox access to $GITHUB_REPO_PATH: pull ✓  push ✓"
+        else
+            info "Sandbox access to $GITHUB_REPO_PATH: pull ✓  push ✗  (enable: sv-clone --allow-repo-write <url>)"
+        fi
     fi
 fi
 

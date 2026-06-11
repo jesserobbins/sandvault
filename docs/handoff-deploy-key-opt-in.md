@@ -19,6 +19,11 @@ This change restores the original opt-in design and makes the write grant a
 separate, explicit flag — converging the merged behavior, the Homebrew
 feedback, and the original proposal.
 
+> **Status:** implemented in `sv-clone` on this branch. The six steps below are
+> the record of what landed, not pending work. The only open item is test
+> coverage (see "Tests / acceptance"), deliberately left as a follow-up to keep
+> this change scoped to the behavior fix.
+
 ## Target behavior
 
 ```
@@ -94,12 +99,15 @@ HTTPS→SSH rewrite. Add cases asserting:
    SSH; the `gh` invocation (mock/stub) does **not** include `--allow-write`.
 3. `-w` includes `--allow-write` and implies key generation without `-k`.
 4. Re-running with `-w` over an existing `-k` clone re-adds the key with
-   write access and does not regenerate the private key file.
-5. With `gh` unavailable, `-k` prints the public key and does not rewrite
-   the origin to SSH... unless we decide a printed key counts as "manual
-   setup pending" — current code rewrites anyway; pick one and assert it.
-   Recommendation: do not rewrite until the user confirms (simplest: never
-   rewrite in the no-`gh` path; document it).
+   write access and does not regenerate the private key file. Re-running with
+   `-k` over a clone whose key is already on GitHub (so `add` returns 422)
+   still rewrites origin to SSH and sets `core.sshCommand` — the read-only
+   re-run is idempotent, not a no-op.
+5. With `gh` unavailable, `-k` prints the public key and does **not** rewrite
+   the origin to SSH. (Resolved: the no-`gh` path leaves origin on its
+   original URL so a public HTTPS clone keeps fetching until the user adds the
+   key manually. The origin rewrite now lives in `activate_deploy_key`, called
+   only on a confirmed upload.)
 
 ## Upstream follow-up
 
