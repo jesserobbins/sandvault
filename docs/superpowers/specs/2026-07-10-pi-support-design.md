@@ -166,6 +166,38 @@ exec "$PI" --approve ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} "$@"
    `for tool_cli in claude codex opencode gemini ...` list so a user-installed
    brew pi symlink is repaired like the other agents.
 
+### `helpers/agentsview-paths.sh` — add pi to the agentsview export integration
+
+This is the single source of truth (sourced by `sv-agentsview-setup`) for
+mirroring agent session directories from the sandbox to a shared location
+and registering them in the host `~/.agentsview/config.toml`. agentsview
+v0.36+ natively supports pi (`pi_dirs` TOML key, display name "Pi",
+session dir `.pi/agent/sessions`), so pi is added alongside the other
+agents:
+
+- `AGENTSVIEW_AGENTS=(claude codex opencode gemini pi)`
+- `AGENTSVIEW_SUBDIR_pi=".pi/agent/sessions"` (sandbox-side)
+- `AGENTSVIEW_DEFAULT_pi=".pi/agent/sessions"` (host-side)
+- `AGENTSVIEW_TOMLKEY_pi="pi_dirs"` (config.toml key)
+
+### `helpers/agentsview-config.py` — register the `pi_dirs` config key
+
+The Python config updater has its own `VALID_KEYS` set and `DEFAULT_SUBPATHS`
+map (separate from the bash `DEFAULT_*` fields). Add `"pi_dirs"` to
+`VALID_KEYS` and `"pi_dirs": ".pi/agent/sessions"` to `DEFAULT_SUBPATHS`
+so `--agent pi_dirs=...` is accepted and the built-in default is materialized.
+
+### `scripts/tests` — regression tests
+
+- `test_help_lists_pi`: `--help` shows the pi command line.
+- `test_pi_wrapper_no_command_v_loop`: static guard that the wrapper never
+  reintroduces a `command -v pi` / `type -P pi` self-resolution loop, and
+  keeps the explicit `~/.bun/bin/pi` fallback.
+- `test_pi_wrapper_wires_autonomy_and_prompt`: asserts the wrapper wires
+  `--approve` and `--append-system-prompt` (mirrors the opencode test).
+- `test_brew_symlink_accessible`: add `pi` to the symlink-permission loop,
+  matching the `sv --fix-permissions` loop.
+
 ### `README.md` — three edits
 
 1. **Quick Start** — after the gemini block, add:
@@ -189,15 +221,20 @@ Add an Unreleased / new-version entry recording the addition.
 - No `sv-clone` changes (it is agent-agnostic; the claude reference is a
   comment example only).
 - No third alias.
-- No tests beyond the existing project validation (`scripts/validate`); the
-  `tests/` directory holds integration fixtures unrelated to agent wiring.
+- No tests beyond the static/regression tests above plus the existing
+  project validation (`scripts/validate`); the `tests/` directory holds
+  integration fixtures (mostly needing SSH) unrelated to agent wiring.
 
 ## Testing / verification
 
 - `shellcheck guest/home/bin/pi`
+- `python3 helpers/agentsview-config.py --self-test` (covers the `pi_dirs` key)
 - `sv --help` shows the `p, pi` line
 - Dispatch resolves: trace `COMMAND=pi` without error
-- `./scripts/validate` passes (per `AGENTS.md`)
+- Static regression tests pass (`test_help_lists_pi`,
+  `test_pi_wrapper_no_command_v_loop`, `test_pi_wrapper_wires_autonomy_and_prompt`)
+- `./scripts/validate` passes (per `AGENTS.md`), modulo the pre-existing
+  host requirement that Remote Login (SSH) be enabled
 - No regressions in existing behavior
 
 ## Open questions

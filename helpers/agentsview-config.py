@@ -28,6 +28,7 @@ VALID_KEYS = {
     "codex_sessions_dirs",
     "opencode_dirs",
     "gemini_dirs",
+    "pi_dirs",
 }
 
 DEFAULT_SUBPATHS = {
@@ -35,6 +36,7 @@ DEFAULT_SUBPATHS = {
     "codex_sessions_dirs": ".codex/sessions",
     "opencode_dirs": ".local/share/opencode",
     "gemini_dirs": ".gemini",
+    "pi_dirs": ".pi/agent/sessions",
 }
 
 

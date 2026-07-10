@@ -367,6 +367,25 @@ run_tests() {
     }
     queue_test test_opencode_wrapper_uses_skip_permissions
 
+    # Mirror the opencode test for pi: assert the wrapper wires the autonomy
+    # flag (--approve) and the shared tool-prompt injection (--append-system-prompt).
+    test_pi_wrapper_wires_autonomy_and_prompt() {
+        local wrapper="$SCRIPT_DIR/../guest/home/bin/pi"
+        if [[ ! -x "$wrapper" ]]; then
+            fail "pi wrapper wires autonomy and prompt" "executable wrapper" "$wrapper"
+            return
+        fi
+        if grep -F -- '--approve' "$wrapper" &>/dev/null \
+            && grep -F -- '--append-system-prompt' "$wrapper" &>/dev/null; then
+            pass "pi wrapper wires autonomy and prompt"
+        else
+            fail "pi wrapper wires autonomy and prompt" \
+                "--approve and --append-system-prompt" \
+                "$wrapper"
+        fi
+    }
+    queue_test test_pi_wrapper_wires_autonomy_and_prompt
+
     # Regression guard: the pi wrapper must NOT resolve its own binary via a
     # PATH search (command -v pi / type -P pi). The wrapper is installed at
     # ~/bin/pi in the sandbox and $HOME/bin precedes ~/.bun/bin on PATH, so a
@@ -483,7 +502,7 @@ run_tests() {
         fi
         local failed=false
         local link
-        for link in claude codex opencode gemini; do
+        for link in claude codex opencode gemini pi; do
             if [[ -L "$brew_prefix/bin/$link" ]]; then
                 local link_perms
                 link_perms=$(/usr/bin/stat -f "%Lp" "$brew_prefix/bin/$link")
