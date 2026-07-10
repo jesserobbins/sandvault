@@ -401,7 +401,7 @@ run_tests() {
         fi
         local code
         code=$(grep -vE '^[[:space:]]*#' "$wrapper")
-        if echo "$code" | grep -E 'command -v pi|type -P pi|type -aP pi' &>/dev/null; then
+        if echo "$code" | grep -E 'command -v pi\b|type -P pi\b|type -aP pi\b' &>/dev/null; then
             fail "pi wrapper has no command -v loop" \
                 "no PATH-search fallback for pi" \
                 "wrapper resolves pi via command -v/type -P (would self-resolve and loop)"

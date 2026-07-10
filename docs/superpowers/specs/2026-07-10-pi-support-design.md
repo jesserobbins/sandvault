@@ -180,6 +180,12 @@ agents:
 - `AGENTSVIEW_DEFAULT_pi=".pi/agent/sessions"` (host-side)
 - `AGENTSVIEW_TOMLKEY_pi="pi_dirs"` (config.toml key)
 
+Because `sv-agentsview-setup` now derives its sandbox-side `mkdir -p`/ACL
+subdir list from `AGENTSVIEW_AGENTS` (single source of truth) rather than a
+hardcoded list, adding pi here is sufficient — the generated setup-merge
+script picks it up automatically. Existing agentsview-export opt-in users
+must delete their state file and re-run `sv-agentsview-setup` to pick up pi.
+
 ### `helpers/agentsview-config.py` — register the `pi_dirs` config key
 
 The Python config updater has its own `VALID_KEYS` set and `DEFAULT_SUBPATHS`
