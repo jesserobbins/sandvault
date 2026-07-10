@@ -114,9 +114,9 @@ fi
 
 if [[ -z "${PI:-}" || ! -x "$PI" ]]; then
     echo >&2 "ERROR: pi is not installed"
-    echo >&2 "       Run 'sv -N pi' (native install in the sandbox) or use Homebrew;"
-    echo >&2 "       a pre-existing install must be staged via the shared workspace"
-    echo >&2 "       (~/.bun/bin/pi and ~/.local/bin/pi are sandbox-home paths)."
+    echo >&2 "       Run 'sv -N pi' (native install in the sandbox), install via your own"
+    echo >&2 "       Homebrew tap (\$HOMEBREW_PREFIX/bin/pi), or stage a pre-existing install"
+    echo >&2 "       via the shared workspace (~/.bun/bin/pi is a sandbox-home path)."
     exit 1
 fi
 
@@ -150,10 +150,13 @@ exec "$PI" --approve ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} "$@"
 3. **`install_deps` native branch** — add a `pi)` case:
    ```bash
    pi)
+       # pi's bin shim needs node at exec time even when already staged.
        ensure_brew_tool "node" "node"
        ;;
    ```
-   (npm-based native install, same as codex/gemini — node needed for `npm`.)
+   pi's npm bin shim needs node at exec time even when already staged, so
+   always ensure node — like gemini, and unlike codex whose self-contained
+   binary can skip node when present.
 
 4. **`install_deps` Homebrew branch** — add a `pi)` case that is an explicit
    no-op (pi has no Homebrew formula; users run it from PATH or native npm):

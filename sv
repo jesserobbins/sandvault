@@ -402,9 +402,10 @@ install_deps () {
                 ensure_brew_tool "node" "node"
                 ;;
             pi)
-                if [[ ! -x "$SHARED_WORKSPACE/user/.local/bin/pi" && ! -x "$SHARED_WORKSPACE/user/bin/pi" ]]; then
-                    ensure_brew_tool "node" "node"
-                fi
+                # pi's bin shim needs node at exec time even when already
+                # staged, so always ensure node (unlike codex's self-contained
+                # binary, which skips it when present).
+                ensure_brew_tool "node" "node"
                 ;;
             *)
                 # node installation not required
