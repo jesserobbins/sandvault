@@ -402,7 +402,9 @@ install_deps () {
                 ensure_brew_tool "node" "node"
                 ;;
             pi)
-                ensure_brew_tool "node" "node"
+                if [[ ! -x "$SHARED_WORKSPACE/user/.local/bin/pi" && ! -x "$SHARED_WORKSPACE/user/bin/pi" ]]; then
+                    ensure_brew_tool "node" "node"
+                fi
                 ;;
             *)
                 # node installation not required

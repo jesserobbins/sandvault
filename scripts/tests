@@ -367,22 +367,26 @@ run_tests() {
     }
     queue_test test_opencode_wrapper_uses_skip_permissions
 
-    # Regression guard: the pi wrapper must NOT fall back to `command -v pi`.
-    # The wrapper is installed at ~/bin/pi in the sandbox and $HOME/bin precedes
-    # ~/.bun/bin on PATH, so a generic PATH search resolves to the wrapper itself
-    # and re-execs in an infinite loop. It must use the explicit ~/.bun/bin/pi
-    # path instead.
+    # Regression guard: the pi wrapper must NOT resolve its own binary via a
+    # PATH search (command -v pi / type -P pi). The wrapper is installed at
+    # ~/bin/pi in the sandbox and $HOME/bin precedes ~/.bun/bin on PATH, so a
+    # PATH search resolves to the wrapper itself and re-execs in an infinite
+    # loop. It must use the explicit ~/.bun/bin/pi path instead. Comment lines
+    # are stripped so the explanatory comment (which mentions command -v pi)
+    # does not false-positive.
     test_pi_wrapper_no_command_v_loop() {
         local wrapper="$SCRIPT_DIR/../guest/home/bin/pi"
         if [[ ! -x "$wrapper" ]]; then
             fail "pi wrapper has no command -v loop" "executable wrapper" "$wrapper"
             return
         fi
-        if grep -F -- '$(command -v pi)' "$wrapper" &>/dev/null; then
+        local code
+        code=$(grep -vE '^[[:space:]]*#' "$wrapper")
+        if echo "$code" | grep -E 'command -v pi|type -P pi|type -aP pi' &>/dev/null; then
             fail "pi wrapper has no command -v loop" \
-                "no 'command -v pi' fallback" \
-                "wrapper uses command -v pi (would self-resolve and loop)"
-        elif ! grep -F -- '"$HOME/.bun/bin/pi"' "$wrapper" &>/dev/null; then
+                "no PATH-search fallback for pi" \
+                "wrapper resolves pi via command -v/type -P (would self-resolve and loop)"
+        elif ! echo "$code" | grep -F -- '"$HOME/.bun/bin/pi"' &>/dev/null; then
             fail "pi wrapper has no command -v loop" \
                 "explicit ~/.bun/bin/pi fallback" \
                 "wrapper missing safe fallback path"

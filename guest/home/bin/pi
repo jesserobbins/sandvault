@@ -43,8 +43,8 @@ fi
 
 if [[ -z "${PI:-}" || ! -x "$PI" ]]; then
     echo >&2 "ERROR: pi is not installed"
-    echo >&2 "       Install it with 'sv -N pi' (native npm install) or ensure pi is"
-    echo >&2 "       on PATH (e.g. a Bun-global install at ~/.bun/bin/pi)."
+    echo >&2 "       Install it with 'sv -N pi' (native npm install), or place pi at"
+    echo >&2 "       ~/.bun/bin/pi, ~/.local/bin/pi, or the Homebrew prefix."
     exit 1
 fi
 
