@@ -2,6 +2,12 @@
 
 All notable user-facing changes to SandVault are documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- `pi` is now a first-class agent, alongside claude, codex, opencode, and gemini. Run it with `sv pi` (alias `sv p`). The wrapper resolves pi from a native npm install (`--native-install`), Homebrew, or the existing PATH (e.g. a Bun-global install at `~/.bun/bin/pi`), and runs it with `--approve` for autonomous sandboxed use. System-prompt injection uses pi's native `--append-system-prompt`, matching the claude wrapper.
+
 ## [1.22.0] - 2026-06-10
 
 ### Fixed

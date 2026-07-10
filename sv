@@ -401,6 +401,9 @@ install_deps () {
             gemini)
                 ensure_brew_tool "node" "node"
                 ;;
+            pi)
+                ensure_brew_tool "node" "node"
+                ;;
             *)
                 # node installation not required
                 ;;
@@ -421,6 +424,10 @@ install_deps () {
                 ;;
             gemini)
                 ensure_brew_tool "gemini-cli" "gemini"
+                ;;
+            pi)
+                # No Homebrew formula; pi runs from PATH (e.g. ~/.bun/bin/pi)
+                # or via native npm install (--native-install).
                 ;;
             *)
                 # No tool installation needed for other commands
@@ -939,11 +946,12 @@ show_help() {
     echo "  co, codex  [PATH]    Open OpenAI Codex in sandvault"
     echo "  o,  opencode [PATH]  Open OpenCode in sandvault"
     echo "  g,  gemini [PATH]    Open Google Gemini in sandvault"
+    echo "  p,  pi     [PATH]    Open pi in sandvault"
     echo "  s, shell   [PATH]    Open shell in sandvault"
     echo "  b, build             Build sandvault"
     echo "  u, uninstall         Remove sandvault; keep shared files"
     echo ""
-    echo "Arguments after -- are passed to the command (claude, codex, opencode, gemini, shell)"
+    echo "Arguments after -- are passed to the command (claude, codex, opencode, gemini, pi, shell)"
     echo ""
     echo "Environment:"
     echo "  SANDVAULT_ARGS       Default arguments (prepended to command line)"
@@ -1069,6 +1077,10 @@ case "${1:-}" in
         ;;
     g|gemini)
         COMMAND=gemini
+        INITIAL_DIR="${2:-}"
+        ;;
+    p|pi)
+        COMMAND=pi
         INITIAL_DIR="${2:-}"
         ;;
     s|shell)

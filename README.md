@@ -90,6 +90,10 @@ Install via git:
 # shortcut: sv g
   sv gemini
 
+# Run pi in the sandbox
+# shortcut: sv p
+  sv pi
+
 # Run command shell in the sandbox
 # shortcut: sv s
   sv shell
@@ -165,6 +169,7 @@ By default, SandVault installs AI tools via Homebrew on the host side. With `--n
 - **Codex** — installed via `npm install -g @openai/codex`
 - **OpenCode** — installed via `curl -fsSL https://opencode.ai/install | bash`
 - **Gemini** — installed via `npm install -g @google/gemini-cli`
+- **pi** — installed via `npm install -g @earendil-works/pi-coding-agent`
 
 Tools are installed on first run and reused on subsequent runs.
 
@@ -177,6 +182,7 @@ sv -N claude
 sv -N codex
 sv -N opencode
 sv -N gemini
+sv -N pi
 ```
 
 To make native install the default, set `SANDVAULT_ARGS`:
