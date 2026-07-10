@@ -205,6 +205,9 @@ so `--agent pi_dirs=...` is accepted and the built-in default is materialized.
   `COMMAND=pi`, guarding the dispatch mapping (a stub test is unsafe for pi
   because the wrapper's Homebrew branch takes precedence over the
   `~/.local/bin/pi` fallback).
+- `test_agentsview_wires_pi`: sources `agentsview-paths.sh` and asserts `pi`
+  is in `AGENTSVIEW_AGENTS` with `SUBDIR=.pi/agent/sessions` and
+  `TOMLKEY=pi_dirs`, guarding the single-source-of-truth agentsview wiring.
 - `test_brew_symlink_accessible`: add `pi` to the symlink-permission loop,
   matching the `sv --fix-permissions` loop.
 

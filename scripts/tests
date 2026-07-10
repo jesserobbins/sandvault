@@ -404,6 +404,34 @@ run_tests() {
     }
     queue_test test_sv_dispatches_pi
 
+    # Guard the agentsview wiring (which the round-6 review caught drifting):
+    # pi must be in AGENTSVIEW_AGENTS with the correct session subdir and TOML
+    # key, so the generated setup-merge script and host config both pick it up.
+    test_agentsview_wires_pi() {
+        local paths="$SCRIPT_DIR/../helpers/agentsview-paths.sh"
+        if [[ ! -r "$paths" ]]; then
+            fail "agentsview wires pi" "readable agentsview-paths.sh" "$paths"
+            return
+        fi
+        # shellcheck source=/dev/null
+        source "$paths"
+        local found=false agent
+        for agent in "${AGENTSVIEW_AGENTS[@]}"; do
+            [[ "$agent" == "pi" ]] && found=true
+        done
+        local subdir tomlkey
+        subdir="$(agentsview_field SUBDIR pi)"
+        tomlkey="$(agentsview_field TOMLKEY pi)"
+        if [[ "$found" == "true" && "$subdir" == ".pi/agent/sessions" && "$tomlkey" == "pi_dirs" ]]; then
+            pass "agentsview wires pi"
+        else
+            fail "agentsview wires pi" \
+                "pi in AGENTSVIEW_AGENTS, SUBDIR=.pi/agent/sessions, TOMLKEY=pi_dirs" \
+                "found=$found subdir=$subdir tomlkey=$tomlkey"
+        fi
+    }
+    queue_test test_agentsview_wires_pi
+
     # Regression guard: the pi wrapper must NOT resolve its own binary via a
     # PATH search (command -v pi / type -P pi). The wrapper is installed at
     # ~/bin/pi in the sandbox and $HOME/bin precedes ~/.bun/bin on PATH, so a

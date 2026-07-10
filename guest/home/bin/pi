@@ -54,5 +54,5 @@ if [[ -n "$TOOL_PROMPT" ]]; then
     EXTRA_ARGS+=(--append-system-prompt "$TOOL_PROMPT")
 fi
 
-echo >&2 "$USER: running pi --approve"
+echo >&2 "$USER: running pi ($PI) --approve"
 exec "$PI" --approve ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} "$@"
