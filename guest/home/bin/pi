@@ -43,8 +43,9 @@ fi
 
 if [[ -z "${PI:-}" || ! -x "$PI" ]]; then
     echo >&2 "ERROR: pi is not installed"
-    echo >&2 "       Install it with 'sv -N pi' (native npm install), or place pi at"
-    echo >&2 "       ~/.bun/bin/pi, ~/.local/bin/pi, or the Homebrew prefix."
+    echo >&2 "       Run 'sv -N pi' (native install in the sandbox) or use Homebrew;"
+    echo >&2 "       a pre-existing install must be staged via the shared workspace"
+    echo >&2 "       (~/.bun/bin/pi and ~/.local/bin/pi are sandbox-home paths)."
     exit 1
 fi
 

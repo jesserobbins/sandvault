@@ -92,8 +92,10 @@ Install via git:
 
 # Run pi in the sandbox
 # shortcut: sv p
-# Note: pi has no Homebrew formula; use 'sv -N pi' or a pre-existing
-# install (e.g. ~/.bun/bin/pi), since default mode won't auto-install it.
+# Note: pi has no Homebrew formula. Use 'sv -N pi' (installs into the sandbox)
+# or Homebrew; a pre-existing install must be staged via the shared workspace
+# (/Users/Shared/sv-$USER/user/.bun/bin/pi) since the sandbox home is separate
+# from your host home (see "custom configuration files" below).
   sv pi
 
 # Run command shell in the sandbox

@@ -114,8 +114,9 @@ fi
 
 if [[ -z "${PI:-}" || ! -x "$PI" ]]; then
     echo >&2 "ERROR: pi is not installed"
-    echo >&2 "       Install it with 'sv -N pi' (native npm install) or ensure pi is"
-    echo >&2 "       on PATH (e.g. a Bun-global install at ~/.bun/bin/pi)."
+    echo >&2 "       Run 'sv -N pi' (native install in the sandbox) or use Homebrew;"
+    echo >&2 "       a pre-existing install must be staged via the shared workspace"
+    echo >&2 "       (~/.bun/bin/pi and ~/.local/bin/pi are sandbox-home paths)."
     exit 1
 fi
 
@@ -125,7 +126,7 @@ if [[ -n "$TOOL_PROMPT" ]]; then
     EXTRA_ARGS+=(--append-system-prompt "$TOOL_PROMPT")
 fi
 
-echo >&2 "$USER: running pi --approve"
+echo >&2 "$USER: running pi ($PI) --approve"
 exec "$PI" --approve ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} "$@"
 ```
 
