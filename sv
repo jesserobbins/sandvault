@@ -1741,7 +1741,7 @@ if [[ "$FIX_PERMISSIONS" == "true" ]]; then
     # Fix homebrew symlinks for any installed tools
     # shellcheck disable=SC2310 # brew_shellenv intentionally used in condition
     if brew_shellenv 2>/dev/null; then
-        for tool_cli in claude codex opencode gemini; do
+        for tool_cli in claude codex opencode gemini pi; do
             brew_link="$(brew --prefix)/bin/$tool_cli"
             if [[ -L "$brew_link" ]]; then
                 link_perms=$(/usr/bin/stat -f "%Lp" "$brew_link")

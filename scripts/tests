@@ -346,10 +346,10 @@ run_tests() {
     test_help_lists_pi() {
         local output
         output=$(sv_cmd --help 2>&1)
-        if [[ "$output" == *"pi"* ]]; then
+        if [[ "$output" == *"p,  pi"* ]]; then
             pass "--help lists pi"
         else
-            fail "--help lists pi" "pi command" "$output"
+            fail "--help lists pi" "pi command line" "$output"
         fi
     }
     queue_test test_help_lists_pi

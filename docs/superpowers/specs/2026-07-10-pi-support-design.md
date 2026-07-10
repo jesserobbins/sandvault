@@ -57,15 +57,19 @@ The wrapper mirrors the opencode/claude pattern with pi's install methods:
 2. **Homebrew** → `$HOMEBREW_PREFIX/bin/pi` if present (pi has no official
    Homebrew formula today, but this branch costs nothing and picks up any
    user-installed formula).
-3. **Already on PATH** → `command -v pi` fallback. This covers the common
-   Bun-global install at `~/.bun/bin/pi`, which is how pi is most often
-   installed and is not covered by steps 1 or 2.
+3. **Known PATH locations** → check explicit paths `~/.local/bin/pi` (a prior
+   native install) and `~/.bun/bin/pi` (the common Bun-global install). We check
+   explicit paths rather than `command -v pi` because the wrapper itself is
+   installed at `~/bin/pi` in the sandbox and `$HOME/bin` precedes these on
+   PATH, so a generic `command -v pi` would resolve to the wrapper and re-exec
+   it in an infinite loop.
 
-If none resolve, error: `ERROR: pi is not installed`.
+If none resolve, error with guidance: `ERROR: pi is not installed` plus a hint
+about `sv -N pi` and the `~/.bun/bin/pi` location.
 
-This A/B/D resolution (Bun-global via PATH fallback; npm-global as the explicit
-native-install path; PATH as the final fallback) matches the user's confirmed
-install landscape.
+This A/B/D resolution (Bun-global via the explicit `~/.bun/bin/pi` check;
+npm-global as the explicit native-install path; `~/.local/bin/pi` covering a
+prior native install) matches the user's confirmed install landscape.
 
 ## Files changed
 
@@ -96,15 +100,22 @@ elif command -v brew &>/dev/null ; then
     fi
 fi
 
-# Fallback: already on PATH (common Bun-global case at ~/.bun/bin/pi)
+# Fallback: explicit known locations (NOT `command -v pi`, which would resolve
+# to this wrapper at ~/bin/pi in the sandbox and loop forever). Covers a prior
+# native install (~/.local/bin/pi) and the common Bun-global install
+# (~/.bun/bin/pi).
 if [[ -z "${PI:-}" || ! -x "$PI" ]]; then
-    if command -v pi &>/dev/null; then
-        PI="$(command -v pi)"
+    if [[ -x "$HOME/.local/bin/pi" ]]; then
+        PI="$HOME/.local/bin/pi"
+    elif [[ -x "$HOME/.bun/bin/pi" ]]; then
+        PI="$HOME/.bun/bin/pi"
     fi
 fi
 
 if [[ -z "${PI:-}" || ! -x "$PI" ]]; then
     echo >&2 "ERROR: pi is not installed"
+    echo >&2 "       Install it with 'sv -N pi' (native npm install) or ensure pi is"
+    echo >&2 "       on PATH (e.g. a Bun-global install at ~/.bun/bin/pi)."
     exit 1
 fi
 
@@ -115,10 +126,10 @@ if [[ -n "$TOOL_PROMPT" ]]; then
 fi
 
 echo >&2 "$USER: running pi --approve"
-exec "$PI" -a ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} "$@"
+exec "$PI" --approve ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} "$@"
 ```
 
-### `sv` — four edits
+### `sv` — five edits
 
 1. **Help text** — after the `g,  gemini [PATH]` line, add:
    ```
@@ -150,6 +161,10 @@ exec "$PI" -a ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} "$@"
        # No Homebrew formula; pi runs from PATH (e.g. ~/.bun/bin/pi) or native npm install.
        ;;
    ```
+
+5. **`--fix-permissions` Homebrew symlink loop** — add `pi` to the
+   `for tool_cli in claude codex opencode gemini ...` list so a user-installed
+   brew pi symlink is repaired like the other agents.
 
 ### `README.md` — three edits
 

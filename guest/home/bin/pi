@@ -26,20 +26,25 @@ elif command -v brew &>/dev/null ; then
     fi
 fi
 
-# Fallback: a pre-existing install on PATH. Covers the common Bun-global
-# install at ~/.bun/bin/pi, which the native-install and Homebrew paths above
-# do not cover. We check the explicit path rather than `command -v pi` because
-# this wrapper itself is installed at ~/bin/pi in the sandbox and $HOME/bin
-# precedes ~/.bun/bin on PATH, so a generic PATH search would resolve to this
-# wrapper and re-exec it in an infinite loop.
+# Fallback: a pre-existing install at a known location. Covers a prior
+# native install at ~/.local/bin/pi and the common Bun-global install at
+# ~/.bun/bin/pi, neither of which the native-install or Homebrew paths above
+# cover. We check explicit paths rather than `command -v pi` because this
+# wrapper itself is installed at ~/bin/pi in the sandbox and $HOME/bin precedes
+# these on PATH, so a generic PATH search would resolve to this wrapper and
+# re-exec it in an infinite loop.
 if [[ -z "${PI:-}" || ! -x "$PI" ]]; then
-    if [[ -x "$HOME/.bun/bin/pi" ]]; then
+    if [[ -x "$HOME/.local/bin/pi" ]]; then
+        PI="$HOME/.local/bin/pi"
+    elif [[ -x "$HOME/.bun/bin/pi" ]]; then
         PI="$HOME/.bun/bin/pi"
     fi
 fi
 
 if [[ -z "${PI:-}" || ! -x "$PI" ]]; then
     echo >&2 "ERROR: pi is not installed"
+    echo >&2 "       Install it with 'sv -N pi' (native npm install) or ensure pi is"
+    echo >&2 "       on PATH (e.g. a Bun-global install at ~/.bun/bin/pi)."
     exit 1
 fi
 
