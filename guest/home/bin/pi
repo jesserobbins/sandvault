@@ -26,11 +26,15 @@ elif command -v brew &>/dev/null ; then
     fi
 fi
 
-# Fallback: already on PATH. Covers the common Bun-global install at
-# ~/.bun/bin/pi, which the native-install and Homebrew paths above do not cover.
+# Fallback: a pre-existing install on PATH. Covers the common Bun-global
+# install at ~/.bun/bin/pi, which the native-install and Homebrew paths above
+# do not cover. We check the explicit path rather than `command -v pi` because
+# this wrapper itself is installed at ~/bin/pi in the sandbox and $HOME/bin
+# precedes ~/.bun/bin on PATH, so a generic PATH search would resolve to this
+# wrapper and re-exec it in an infinite loop.
 if [[ -z "${PI:-}" || ! -x "$PI" ]]; then
-    if command -v pi &>/dev/null; then
-        PI="$(command -v pi)"
+    if [[ -x "$HOME/.bun/bin/pi" ]]; then
+        PI="$HOME/.bun/bin/pi"
     fi
 fi
 
@@ -46,4 +50,4 @@ if [[ -n "$TOOL_PROMPT" ]]; then
 fi
 
 echo >&2 "$USER: running pi --approve"
-exec "$PI" -a ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} "$@"
+exec "$PI" --approve ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} "$@"

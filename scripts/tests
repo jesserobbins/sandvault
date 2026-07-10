@@ -343,6 +343,17 @@ run_tests() {
     }
     queue_test test_help_lists_opencode
 
+    test_help_lists_pi() {
+        local output
+        output=$(sv_cmd --help 2>&1)
+        if [[ "$output" == *"pi"* ]]; then
+            pass "--help lists pi"
+        else
+            fail "--help lists pi" "pi command" "$output"
+        fi
+    }
+    queue_test test_help_lists_pi
+
     test_opencode_wrapper_uses_skip_permissions() {
         if [[ -x "$SCRIPT_DIR/../guest/home/bin/opencode" ]] \
             && grep -F -- "OPENCODE_PERMISSION" \
@@ -355,6 +366,31 @@ run_tests() {
         fi
     }
     queue_test test_opencode_wrapper_uses_skip_permissions
+
+    # Regression guard: the pi wrapper must NOT fall back to `command -v pi`.
+    # The wrapper is installed at ~/bin/pi in the sandbox and $HOME/bin precedes
+    # ~/.bun/bin on PATH, so a generic PATH search resolves to the wrapper itself
+    # and re-execs in an infinite loop. It must use the explicit ~/.bun/bin/pi
+    # path instead.
+    test_pi_wrapper_no_command_v_loop() {
+        local wrapper="$SCRIPT_DIR/../guest/home/bin/pi"
+        if [[ ! -x "$wrapper" ]]; then
+            fail "pi wrapper has no command -v loop" "executable wrapper" "$wrapper"
+            return
+        fi
+        if grep -F -- '$(command -v pi)' "$wrapper" &>/dev/null; then
+            fail "pi wrapper has no command -v loop" \
+                "no 'command -v pi' fallback" \
+                "wrapper uses command -v pi (would self-resolve and loop)"
+        elif ! grep -F -- '"$HOME/.bun/bin/pi"' "$wrapper" &>/dev/null; then
+            fail "pi wrapper has no command -v loop" \
+                "explicit ~/.bun/bin/pi fallback" \
+                "wrapper missing safe fallback path"
+        else
+            pass "pi wrapper has no command -v loop"
+        fi
+    }
+    queue_test test_pi_wrapper_no_command_v_loop
 
     # Unknown option
     test_unknown_option() {
