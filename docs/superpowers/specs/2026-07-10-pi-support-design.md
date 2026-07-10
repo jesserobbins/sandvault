@@ -201,6 +201,10 @@ so `--agent pi_dirs=...` is accepted and the built-in default is materialized.
   keeps the explicit `~/.bun/bin/pi` fallback.
 - `test_pi_wrapper_wires_autonomy_and_prompt`: asserts the wrapper wires
   `--approve` and `--append-system-prompt` (mirrors the opencode test).
+- `test_sv_dispatches_pi`: asserts `sv` has a `p|pi)` case arm setting
+  `COMMAND=pi`, guarding the dispatch mapping (a stub test is unsafe for pi
+  because the wrapper's Homebrew branch takes precedence over the
+  `~/.local/bin/pi` fallback).
 - `test_brew_symlink_accessible`: add `pi` to the symlink-permission loop,
   matching the `sv --fix-permissions` loop.
 

@@ -386,6 +386,24 @@ run_tests() {
     }
     queue_test test_pi_wrapper_wires_autonomy_and_prompt
 
+    # Guard the dispatch mapping: a typo in (or removal of) the p|pi) case arm
+    # would pass the wrapper static tests but break 'sv pi'. Assert sv has a
+    # p|pi) arm that sets COMMAND=pi. (A full end-to-end stub test like
+    # test_codex_unicode_args isn't safe for pi: the wrapper's Homebrew branch
+    # takes precedence over the ~/.local/bin/pi fallback, so a host with a
+    # brew pi installed would run the real binary, not the stub.)
+    test_sv_dispatches_pi() {
+        if grep -Eq '^[[:space:]]+p[|]pi\)' "$SV_BASE" \
+            && grep -A2 -E '^[[:space:]]+p[|]pi\)' "$SV_BASE" | grep -q 'COMMAND=pi'; then
+            pass "sv dispatches p|pi -> COMMAND=pi"
+        else
+            fail "sv dispatches p|pi -> COMMAND=pi" \
+                "a p|pi) case arm setting COMMAND=pi" \
+                "missing or broken dispatch arm in $SV_BASE"
+        fi
+    }
+    queue_test test_sv_dispatches_pi
+
     # Regression guard: the pi wrapper must NOT resolve its own binary via a
     # PATH search (command -v pi / type -P pi). The wrapper is installed at
     # ~/bin/pi in the sandbox and $HOME/bin precedes ~/.bun/bin on PATH, so a

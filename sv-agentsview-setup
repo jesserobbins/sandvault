@@ -85,7 +85,7 @@ agentsview_contamination_check() {
 # Install
 ###############################################################################
 
-# Create the four mirror symlinks under $SV_PRIVATE_DIR/sessions/.
+# Create one mirror symlink per agent under $SV_PRIVATE_DIR/sessions/.
 # Idempotent. Logs and continues on individual failures (warn for tolerated
 # skips like a non-symlink at the path; error for unexpected `ln` failures).
 agentsview_install_symlinks() {
@@ -165,7 +165,7 @@ agentsview_update_config() {
 }
 
 # Write the sandbox-side setup-merge script that runs as the sandvault user
-# during session startup. Each session it ensures the four agent session
+# during session startup. Each session it ensures each agent's session
 # subdirs exist with an inheriting read ACL for the sandvault group, so JSONL
 # files are readable by the host user through the mirror symlinks. No-op
 # unless the host has opted in (state file == enabled).

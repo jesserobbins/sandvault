@@ -391,7 +391,7 @@ install_lightpanda() {
 install_deps () {
     if [[ "$NATIVE_INSTALL" == "true" ]]; then
         # Native install is handled inside the sandbox by guest/home/bin/* scripts;
-        # ensure node is available for npm-based tools (codex, gemini).
+        # ensure node is available for npm-based tools (codex, gemini, pi).
         case "${COMMAND:-}" in
             codex)
                 if [[ ! -x "$SHARED_WORKSPACE/user/.local/bin/codex" && ! -x "$SHARED_WORKSPACE/user/bin/codex" ]]; then
