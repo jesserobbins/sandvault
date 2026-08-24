@@ -76,7 +76,76 @@ git_repo() {
         -c core.hooksPath=/dev/null \
         -c core.pager=cat \
         -c protocol.ext.allow=never \
+        -c core.attributesFile=/dev/null \
+        -c filter.lfs.process= \
+        -c filter.lfs.smudge= \
+        -c filter.lfs.clean= \
         -C "$REPO_DIR" "$@"
+}
+
+# Populates a freshly-created worktree from HEAD without running
+# attribute-driven filters. A normal `git checkout` runs smudge/clean/textconv
+# filters from repo config, which a guest can poison to execute commands as
+# the host user. We use ls-tree + cat-file to bypass the filter machinery
+# entirely, then update-index to make the index match HEAD.
+safe_checkout() {
+    local worktree_dir="$1"
+    local entry mode type sha path chmod_mode
+
+    while IFS= read -r -d '' entry; do
+        mode="${entry%% *}"
+        type="${entry#* }"; type="${type%% *}"
+        sha="${entry##* }"; sha="${sha%%$'\t'*}"
+        path="${entry##*$'\t'}"
+        case "$type" in
+            blob)
+                mkdir -p "$worktree_dir/$(dirname "$path")"
+                git -C "$worktree_dir" cat-file -p "$sha" > "$worktree_dir/$path"
+                # Convert git mode (100644/100755) to chmod mode (644/755).
+                chmod_mode="${mode#10}"
+                chmod "$chmod_mode" "$worktree_dir/$path"
+                ;;
+            commit)
+                # Submodule: create an empty directory; do not recurse.
+                mkdir -p "$worktree_dir/$path"
+                ;;
+        esac
+    done < <(git -C "$worktree_dir" ls-tree -r -z HEAD)
+
+    while IFS= read -r -d '' entry; do
+        mode="${entry%% *}"
+        sha="${entry##* }"; sha="${sha%%$'\t'*}"
+        path="${entry##*$'\t'}"
+        git -C "$worktree_dir" update-index --add --cacheinfo "$mode,$sha,$path"
+    done < <(git -C "$worktree_dir" ls-tree -r -z HEAD)
+}
+
+# Portable per-repository lock. macOS does not ship flock(1), so we use mkdir
+# (atomic on POSIX) plus a holder-pid file to recover from stale locks when
+# the owning process is gone. The lock is stored as a directory under
+# $SHARED_WORKSPACE/repos so it is co-located with the repo it protects.
+acquire_repo_lock() {
+    mkdir -p "$(dirname "$REPO_LOCK")"
+    local holder_pid_file="$REPO_LOCK/lock.pid"
+    while true; do
+        if mkdir "$REPO_LOCK" 2>/dev/null; then
+            echo $$ > "$holder_pid_file"
+            return 0
+        fi
+        if [[ -f "$holder_pid_file" ]]; then
+            local pid
+            pid="$(cat "$holder_pid_file" 2>/dev/null || echo 0)"
+            if [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
+                rm -rf "$REPO_LOCK"
+                continue
+            fi
+        fi
+        sleep 0.1
+    done
+}
+
+release_repo_lock() {
+    rm -rf "$REPO_LOCK"
 }
 
 
@@ -238,6 +307,7 @@ readonly CLONE_SOURCE="${LOCAL_REPOSITORY:-$REPOSITORY_SOURCE_URL}"
 if [[ -n "$WORKTREE_BRANCH" ]]; then
     readonly REPO_DIR="$SHARED_WORKSPACE/repos/$REPOSITORY_NAME.git"
     readonly WORKTREE_DIR="$SHARED_WORKSPACE/worktrees/$REPOSITORY_NAME/$WORKTREE_BRANCH"
+    readonly REPO_LOCK="$SHARED_WORKSPACE/repos/.${REPOSITORY_NAME}.lock.d"
 else
     readonly REPO_DIR="$SHARED_WORKSPACE/repos/$REPOSITORY_NAME"
     readonly WORKTREE_DIR=""
@@ -284,9 +354,31 @@ else
         # current at clone time. An empty ref namespace avoids both. Fetch also
         # transfers a pack, so like --no-hardlinks below it never hardlinks the
         # host's objects into guest-writable storage.
-        git init --quiet --bare "$REPO_DIR"
-        git_repo remote add origin "$CLONE_SOURCE"
-        git_repo fetch --quiet origin
+        #
+        # Build into a temp dir and mv into place only after the fetch
+        # succeeds. A failed or interrupted fetch must not leave a half-built
+        # repo that later runs treat as existing.
+        (
+            acquire_repo_lock
+            trap release_repo_lock EXIT
+            if [[ -d "$REPO_MARKER" ]]; then
+                # Another task initialized the repo while we waited.
+                exit 0
+            fi
+            REPO_TEMP="$REPO_DIR.tmp.$$"
+            cleanup_temp() { rm -rf "$REPO_TEMP"; }
+            trap cleanup_temp EXIT
+            git init --quiet --bare "$REPO_TEMP"
+            # The repo is brand new, so no guest config exists yet. Use plain
+            # git for the first fetch so ssh:// and git@ origins work (git_repo
+            # sets core.sshCommand empty).
+            git -C "$REPO_TEMP" remote add origin "$CLONE_SOURCE"
+            git -C "$REPO_TEMP" fetch --quiet origin
+            mv "$REPO_TEMP" "$REPO_DIR"
+            trap release_repo_lock EXIT
+        )
+        # The repo now exists; mark it so the deferred fetch runs too.
+        REPO_EXISTED=true
     else
         git clone --no-hardlinks "$CLONE_SOURCE" "$REPO_DIR"
     fi
@@ -463,10 +555,29 @@ if [[ "$REPO_EXISTED" == true ]]; then
         FETCH_ARGS+=("+refs/heads/*:refs/remotes/origin/*")
     fi
     if [[ -f "$DEPLOY_KEY_PRIV" ]]; then
-        git_repo -c "core.sshCommand=ssh -i '$DEPLOY_KEY_PRIV' -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" \
-            fetch "${FETCH_ARGS[@]}"
+        # Serialize fetches in worktree mode so concurrent runs do not contend
+        # on shared refs.
+        if [[ -n "$WORKTREE_BRANCH" ]]; then
+            (
+                acquire_repo_lock
+                trap release_repo_lock EXIT
+                git_repo -c "core.sshCommand=ssh -i '$DEPLOY_KEY_PRIV' -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" \
+                    fetch "${FETCH_ARGS[@]}"
+            )
+        else
+            git_repo -c "core.sshCommand=ssh -i '$DEPLOY_KEY_PRIV' -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" \
+                fetch "${FETCH_ARGS[@]}"
+        fi
     else
-        git_repo fetch "${FETCH_ARGS[@]}"
+        if [[ -n "$WORKTREE_BRANCH" ]]; then
+            (
+                acquire_repo_lock
+                trap release_repo_lock EXIT
+                git_repo fetch "${FETCH_ARGS[@]}"
+            )
+        else
+            git_repo fetch "${FETCH_ARGS[@]}"
+        fi
     fi
 fi
 
@@ -491,6 +602,9 @@ fi
 # interrupted session can be relaunched. Prune drops registrations for trees
 # deleted from disk; worktrees themselves are never removed automatically.
 if [[ -n "$WORKTREE_BRANCH" ]]; then
+    acquire_repo_lock
+    trap release_repo_lock EXIT
+
     git_repo worktree prune
 
     # for-each-ref rather than show-ref: it reports "no such branch" by printing
@@ -500,35 +614,76 @@ if [[ -n "$WORKTREE_BRANCH" ]]; then
     BRANCH_REF="$(git_repo for-each-ref --format='%(refname)' "refs/heads/$WORKTREE_BRANCH")"
 
     if grep -Fxq "worktree $WORKTREE_DIR" <<< "$WORKTREE_LIST"; then
+        # The path matches, but verify the worktree is on the expected branch.
+        # A prior session may have switched or detached HEAD there.
+        WORKTREE_BRANCH_LINE="$(awk -v dir="$WORKTREE_DIR" '
+            $1 == "worktree" { in_block = ($2 == dir) }
+            in_block && $1 == "branch" { print $2; exit }
+        ' <<< "$WORKTREE_LIST")"
+        if [[ "$WORKTREE_BRANCH_LINE" != "refs/heads/$WORKTREE_BRANCH" ]]; then
+            abort "Worktree $WORKTREE_DIR exists but is not on branch $WORKTREE_BRANCH"
+        fi
         debug "Reusing existing worktree $WORKTREE_DIR"
     else
         mkdir -p "$(dirname "$WORKTREE_DIR")"
         # git worktree add reports progress on stdout. Everything this script
         # emits goes to stderr, so redirect it and leave stdout to the session.
         if [[ "$BRANCH_REF" == "refs/heads/$WORKTREE_BRANCH" ]]; then
-            git_repo worktree add "$WORKTREE_DIR" "$WORKTREE_BRANCH" >&2
+            # Existing branch: create worktree without checkout, then populate
+            # it safely so a guest-poisoned .gitattributes or [filter] config
+            # cannot run host commands.
+            git_repo worktree add --no-checkout "$WORKTREE_DIR" "$WORKTREE_BRANCH" >&2
+            safe_checkout "$WORKTREE_DIR"
         else
             BASE_REF="$WORKTREE_BASE"
             if [[ -z "$BASE_REF" ]]; then
-                # git records refs/remotes/origin/HEAD as part of the fetch
-                # above, but only since 2.48; on older git, and on remotes
-                # that publish no HEAD, --base has to name the branch point.
+                # Refresh origin/HEAD from the remote. A local-path source may
+                # have recorded the host checkout's current HEAD; this forces
+                # the remote's real default branch. It also fixes git <2.48,
+                # which does not record origin/HEAD during fetch.
+                git_repo remote set-head origin --auto >/dev/null 2>&1 || true
                 BASE_REF="$(git_repo for-each-ref --format='%(symref:short)' refs/remotes/origin/HEAD)"
+                if [[ -z "$BASE_REF" ]]; then
+                    # Fallback for remotes that publish no HEAD or for git
+                    # versions that do not create origin/HEAD.
+                    BASE_REF="$(git_repo ls-remote --symref origin HEAD 2>/dev/null \
+                        | awk '/^ref: refs\/heads\// { sub(/^ref: refs\/heads\//, "", $2); print $2; exit }')"
+                fi
                 [[ -n "$BASE_REF" ]] \
                     || abort "Could not determine the default branch of $REPOSITORY_NAME; pass --base REF"
             fi
-            # Qualify a bare base name: left bare it triggers worktree add's
-            # DWIM, which discards -b and checks out the base branch instead.
-            BASE_REMOTE_REF="$(git_repo for-each-ref --format='%(refname)' \
-                "refs/remotes/origin/$BASE_REF")"
-            if [[ "$BASE_REMOTE_REF" == "refs/remotes/origin/$BASE_REF" ]]; then
-                BASE_REF="origin/$BASE_REF"
+
+            # Resolve the base to an exact commit. Prefer local refs (normal
+            # git precedence), and only rewrite a bare name to origin/<name>
+            # when it does not resolve at all.
+            if git_repo rev-parse --verify --quiet "$BASE_REF^{commit}" >/dev/null; then
+                BASE_REF="$(git_repo rev-parse --verify "$BASE_REF^{commit}")"
+            else
+                BASE_REMOTE_REF="$(git_repo for-each-ref --format='%(refname)' \
+                    "refs/remotes/origin/$BASE_REF")"
+                if [[ "$BASE_REMOTE_REF" == "refs/remotes/origin/$BASE_REF" ]]; then
+                    BASE_REF="origin/$BASE_REF"
+                fi
             fi
-            # An unresolvable BASE_REF is left to git, which rejects it with
-            # "fatal: invalid reference: <ref>".
-            git_repo worktree add -b "$WORKTREE_BRANCH" "$WORKTREE_DIR" "$BASE_REF" >&2
+
+            # Create the task branch without tracking the base branch, so a
+            # bare `git push` in the worktree pushes the task branch rather
+            # than the base branch.
+            git_repo worktree add --no-track -b "$WORKTREE_BRANCH" --no-checkout "$WORKTREE_DIR" "$BASE_REF" >&2
+            safe_checkout "$WORKTREE_DIR"
+
+            if [[ "$DEPLOY_KEY_WRITE" == true ]]; then
+                # For repos with write access, set the task branch to track
+                # its own remote branch so `git push` and `git pull` work.
+                git -C "$WORKTREE_DIR" config "branch.$WORKTREE_BRANCH.remote" origin
+                git -C "$WORKTREE_DIR" config "branch.$WORKTREE_BRANCH.merge" "refs/heads/$WORKTREE_BRANCH"
+                git -C "$WORKTREE_DIR" config push.autoSetupRemote true
+            fi
         fi
     fi
+
+    release_repo_lock
+    trap - EXIT
     info "Worktree ready at $WORKTREE_DIR (branch $WORKTREE_BRANCH)"
 fi
 readonly LAUNCH_DIR="${WORKTREE_DIR:-$REPO_DIR}"
