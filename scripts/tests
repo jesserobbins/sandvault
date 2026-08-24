@@ -1572,6 +1572,8 @@ STUB_EOF
 
         branch="sv-test/worktree"
         fixture_dir="$(make_worktree_fixture)"
+        # Ensure the temp fixture is removed on every exit path.
+        trap 'rm -rf "$fixture_dir"' RETURN
         repository_name="$(basename "$fixture_dir")"
         repo_path="$SHARED_WORKSPACE/repos/$repository_name.git"
         worktree_path="$SHARED_WORKSPACE/worktrees/$repository_name/$branch"
@@ -1587,7 +1589,6 @@ STUB_EOF
         launch_dir="${launch_dir##*$'\n'}"
         if [[ "$status" -ne 0 ]]; then
             fail "sv-clone -t starts the session in a worktree" "exit 0" "$status | $launch_dir"
-            rm -rf "$fixture_dir"
             return
         fi
 
@@ -1632,14 +1633,12 @@ STUB_EOF
         output="${output##*$'\n'}"
         if [[ "$status" -ne 0 || "$output" != "$worktree_path" ]]; then
             fail "sv-clone -t re-run reuses the worktree" "exit 0 | $worktree_path" "$status | $output"
-            rm -rf "$fixture_dir"
             return
         fi
 
         pass "sv-clone -t clones bare and starts the session in a sibling worktree"
 
         sv_cmd s -- rm -rf "$repo_path" "$SHARED_WORKSPACE/worktrees/$repository_name" >/dev/null 2>&1
-        rm -rf "$fixture_dir"
     }
     queue_test test_sv_clone_worktree
     wait_for_all_running_tests
@@ -1656,6 +1655,7 @@ STUB_EOF
         branch="sv-test/bare-base"
         base="main"
         fixture_dir="$(make_worktree_fixture)"
+        trap 'rm -rf "$fixture_dir"' RETURN
         repository_name="$(basename "$fixture_dir")"
         repo_path="$SHARED_WORKSPACE/repos/$repository_name.git"
         worktree_path="$SHARED_WORKSPACE/worktrees/$repository_name/$branch"
@@ -1670,7 +1670,6 @@ STUB_EOF
         launch_dir="${launch_dir##*$'\n'}"
         if [[ "$status" -ne 0 || "$launch_dir" != "$worktree_path" ]]; then
             fail "sv-clone -t --base <bare name> starts in the worktree" "$worktree_path" "$status | $launch_dir"
-            rm -rf "$fixture_dir"
             return
         fi
 
@@ -1690,7 +1689,6 @@ STUB_EOF
         pass "sv-clone -t with a bare --base name still creates the task branch"
 
         sv_cmd s -- rm -rf "$repo_path" "$SHARED_WORKSPACE/worktrees/$repository_name" >/dev/null 2>&1
-        rm -rf "$fixture_dir"
     }
     queue_test test_sv_clone_worktree_bare_base
     wait_for_all_running_tests

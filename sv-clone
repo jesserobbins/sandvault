@@ -99,11 +99,19 @@ safe_checkout() {
         path="${entry##*$'\t'}"
         case "$type" in
             blob)
-                mkdir -p "$worktree_dir/$(dirname "$path")"
-                git -C "$worktree_dir" cat-file -p "$sha" > "$worktree_dir/$path"
-                # Convert git mode (100644/100755) to chmod mode (644/755).
-                chmod_mode="${mode#10}"
-                chmod "$chmod_mode" "$worktree_dir/$path"
+                # Symlinks have mode 120000 and type "blob" in ls-tree, so
+                # handle them before the regular-file path: create an actual
+                # symlink so git status stays clean and the tree is usable.
+                if [[ "$mode" == 120* ]]; then
+                    mkdir -p "$worktree_dir/$(dirname "$path")"
+                    ln -s "$(git -C "$worktree_dir" cat-file -p "$sha")" "$worktree_dir/$path"
+                else
+                    mkdir -p "$worktree_dir/$(dirname "$path")"
+                    git -C "$worktree_dir" cat-file -p "$sha" > "$worktree_dir/$path"
+                    # Convert git mode (100644/100755) to chmod mode (644/755).
+                    chmod_mode="${mode#10}"
+                    chmod "$chmod_mode" "$worktree_dir/$path"
+                fi
                 ;;
             commit)
                 # Submodule: create an empty directory; do not recurse.
@@ -146,6 +154,18 @@ acquire_repo_lock() {
 
 release_repo_lock() {
     rm -rf "$REPO_LOCK"
+}
+
+# Set up self-tracking for the task branch so a bare `git push` in the
+# worktree pushes the task branch to its own remote branch. Only set when
+# -w/--allow-repo-write is given. Called on both the new-branch path and
+# the reuse path, since a first run without -w may not have set it.
+configure_task_branch_tracking() {
+    if [[ "$DEPLOY_KEY_WRITE" == true ]]; then
+        git -C "$WORKTREE_DIR" config "branch.$WORKTREE_BRANCH.remote" origin
+        git -C "$WORKTREE_DIR" config "branch.$WORKTREE_BRANCH.merge" "refs/heads/$WORKTREE_BRANCH"
+        git -C "$WORKTREE_DIR" config push.autoSetupRemote true
+    fi
 }
 
 
@@ -366,7 +386,10 @@ else
                 exit 0
             fi
             REPO_TEMP="$REPO_DIR.tmp.$$"
-            cleanup_temp() { rm -rf "$REPO_TEMP"; }
+            cleanup_temp() {
+                rm -rf "$REPO_TEMP"
+                release_repo_lock
+            }
             trap cleanup_temp EXIT
             git init --quiet --bare "$REPO_TEMP"
             # The repo is brand new, so no guest config exists yet. Use plain
@@ -375,6 +398,9 @@ else
             git -C "$REPO_TEMP" remote add origin "$CLONE_SOURCE"
             git -C "$REPO_TEMP" fetch --quiet origin
             mv "$REPO_TEMP" "$REPO_DIR"
+            # Success: restore the lock-release trap so the lock is released
+            # on subshell exit. (cleanup_temp also releases the lock, but the
+            # temp dir no longer exists, so it is a no-op for the temp part.)
             trap release_repo_lock EXIT
         )
         # The repo now exists; mark it so the deferred fetch runs too.
@@ -569,11 +595,16 @@ if [[ "$REPO_EXISTED" == true ]]; then
                 fetch "${FETCH_ARGS[@]}"
         fi
     else
+        # No deploy key. In worktree mode, git_repo sets core.sshCommand
+        # empty, which breaks SSH origins. Use plain git with an explicit
+        # sshCommand=ssh so SSH works while still overriding any guest-written
+        # sshCommand in the repo config. Non-worktree mode never checked out
+        # into guest-writable storage, so git_repo is safe there.
         if [[ -n "$WORKTREE_BRANCH" ]]; then
             (
                 acquire_repo_lock
                 trap release_repo_lock EXIT
-                git_repo fetch "${FETCH_ARGS[@]}"
+                git -C "$REPO_DIR" -c core.sshCommand=ssh fetch "${FETCH_ARGS[@]}"
             )
         else
             git_repo fetch "${FETCH_ARGS[@]}"
@@ -624,6 +655,9 @@ if [[ -n "$WORKTREE_BRANCH" ]]; then
             abort "Worktree $WORKTREE_DIR exists but is not on branch $WORKTREE_BRANCH"
         fi
         debug "Reusing existing worktree $WORKTREE_DIR"
+        # A prior run may have created the worktree without -w, so set up
+        # self-tracking here too if write access is requested this run.
+        configure_task_branch_tracking
     else
         mkdir -p "$(dirname "$WORKTREE_DIR")"
         # git worktree add reports progress on stdout. Everything this script
@@ -640,14 +674,29 @@ if [[ -n "$WORKTREE_BRANCH" ]]; then
                 # Refresh origin/HEAD from the remote. A local-path source may
                 # have recorded the host checkout's current HEAD; this forces
                 # the remote's real default branch. It also fixes git <2.48,
-                # which does not record origin/HEAD during fetch.
-                git_repo remote set-head origin --auto >/dev/null 2>&1 || true
-                BASE_REF="$(git_repo for-each-ref --format='%(symref:short)' refs/remotes/origin/HEAD)"
+                # which does not record origin/HEAD during fetch. Use plain git
+                # (not git_repo) so SSH origins work: git_repo sets
+                # core.sshCommand empty. A deploy key, if present, needs an
+                # sshCommand that uses it.
+                if [[ -f "$DEPLOY_KEY_PRIV" ]]; then
+                    git -C "$REPO_DIR" -c "core.sshCommand=ssh -i '$DEPLOY_KEY_PRIV' -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" \
+                        remote set-head origin --auto >/dev/null 2>&1 || true
+                else
+                    git -C "$REPO_DIR" -c core.sshCommand=ssh remote set-head origin --auto >/dev/null 2>&1 || true
+                fi
+                BASE_REF="$(git -C "$REPO_DIR" for-each-ref --format='%(symref:short)' refs/remotes/origin/HEAD)"
                 if [[ -z "$BASE_REF" ]]; then
                     # Fallback for remotes that publish no HEAD or for git
-                    # versions that do not create origin/HEAD.
-                    BASE_REF="$(git_repo ls-remote --symref origin HEAD 2>/dev/null \
-                        | awk '/^ref: refs\/heads\// { sub(/^ref: refs\/heads\//, "", $2); print $2; exit }')"
+                    # versions that do not create origin/HEAD. Use plain git
+                    # for the same SSH reason as above.
+                    if [[ -f "$DEPLOY_KEY_PRIV" ]]; then
+                        BASE_REF="$(git -C "$REPO_DIR" -c "core.sshCommand=ssh -i '$DEPLOY_KEY_PRIV' -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" \
+                            ls-remote --symref origin HEAD 2>/dev/null \
+                            | awk '/^ref: refs\/heads\// { sub(/^ref: refs\/heads\//, "", $2); print $2; exit }')"
+                    else
+                        BASE_REF="$(git -C "$REPO_DIR" -c core.sshCommand=ssh ls-remote --symref origin HEAD 2>/dev/null \
+                            | awk '/^ref: refs\/heads\// { sub(/^ref: refs\/heads\//, "", $2); print $2; exit }')"
+                    fi
                 fi
                 [[ -n "$BASE_REF" ]] \
                     || abort "Could not determine the default branch of $REPOSITORY_NAME; pass --base REF"
@@ -672,13 +721,7 @@ if [[ -n "$WORKTREE_BRANCH" ]]; then
             git_repo worktree add --no-track -b "$WORKTREE_BRANCH" --no-checkout "$WORKTREE_DIR" "$BASE_REF" >&2
             safe_checkout "$WORKTREE_DIR"
 
-            if [[ "$DEPLOY_KEY_WRITE" == true ]]; then
-                # For repos with write access, set the task branch to track
-                # its own remote branch so `git push` and `git pull` work.
-                git -C "$WORKTREE_DIR" config "branch.$WORKTREE_BRANCH.remote" origin
-                git -C "$WORKTREE_DIR" config "branch.$WORKTREE_BRANCH.merge" "refs/heads/$WORKTREE_BRANCH"
-                git -C "$WORKTREE_DIR" config push.autoSetupRemote true
-            fi
+            configure_task_branch_tracking
         fi
     fi
 
