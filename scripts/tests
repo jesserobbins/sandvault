@@ -514,6 +514,211 @@ run_tests() {
     }
     queue_test test_codex_code_mode_host_warmup_present
 
+    # LaunchServices answers in the bootstrap namespace of the host user, so a
+    # bundle opened from inside the sandbox ran as the host user. Build a bundle
+    # whose executable reports its identity to a path the sandbox cannot write,
+    # open it from inside, and require that no such file appears. A hand-built
+    # bundle only proves its own kLSNoExecutableErr, so a system app is opened by
+    # name as well: the host must gain no Calculator process from it.
+    test_sandbox_cannot_launch_as_host() {
+        local _ app calc_output calc_pids calc_status live live_output marker output status
+        marker="/Users/Shared/sv-launch-probe.$$"
+        app="$SHARED_WORKSPACE/sv-launch-probe.app"
+        rm -f "$marker"
+        rm -rf "$app"
+        mkdir -p "$app/Contents/MacOS"
+        cat > "$app/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>local.sv.launchprobe</string>
+<key>CFBundleExecutable</key><string>probe</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>LSUIElement</key><true/>
+</dict></plist>
+PLIST
+        printf '#!/bin/sh\nid -un > %s 2>&1\n' "$marker" > "$app/Contents/MacOS/probe"
+        chmod +x "$app/Contents/MacOS/probe"
+        chmod -R a+rX "$app"
+
+        set +e
+        output=$(sv_cmd s -- open "$app" 2>&1)
+        status=$?
+        set -e
+        # A launch that the profile lets through can still arrive after the open
+        # call returns, so poll instead of waiting a fixed time: a late launch
+        # must be caught, not slept past.
+        for _ in $(seq 1 50); do
+            [[ -e "$marker" ]] && break
+            sleep 0.2
+        done
+        # The marker proves nothing if sv aborted before it started the sandboxed
+        # shell (--no-build with a stale profile, or a version mismatch): no
+        # marker appears because the profile under test was never applied, so
+        # keep sv's own message for the failure text.
+        set +e
+        live_output=$(sv_cmd s -- true 2>&1)
+        live=$?
+        set -e
+        if [[ -e "$marker" ]]; then
+            fail "sandbox cannot launch as the host user" \
+                "no host-owned file appears" "the bundle ran as $(cat "$marker")"
+        elif [[ "$live" -ne 0 ]]; then
+            fail "sandbox cannot launch as the host user" \
+                "the sandbox session runs" "sv s -- true exited $live: $live_output"
+        elif [[ "$output" == *"no such file or directory: open"* || "$output" == *"command not found"* ]]; then
+            fail "sandbox cannot launch as the host user" \
+                "open runs from inside the sandbox" "the harness ran no open: $status | $output"
+        else
+            # Opened by name from inside the sandbox. Unsandboxed, the same open
+            # as the sandvault user starts a Calculator owned by $HOST_USER, so an
+            # empty pgrep is what "the launch never reaches the host" means. A
+            # Calculator the host already had open before this run also shows up
+            # here, which is what the recorded pids in the failure text are for.
+            set +e
+            calc_output=$(sv_cmd s -- open -a Calculator 2>&1)
+            calc_status=$?
+            set -e
+            calc_pids=""
+            for _ in $(seq 1 50); do
+                # No match is the pass case, so swallow pgrep's exit 1 (and the
+                # SIGPIPE head can cause) instead of dying under errexit.
+                calc_pids=$(pgrep -u "$HOST_USER" -fl 'Calculator.app' 2>/dev/null | head -3 || true)
+                [[ -z "$calc_pids" ]] || break
+                sleep 0.2
+            done
+            if [[ -n "$calc_pids" ]]; then
+                fail "sandbox cannot launch as the host user" \
+                    "no Calculator process owned by $HOST_USER" \
+                    "open -a Calculator exited $calc_status and the host gained [$calc_pids]: $calc_output"
+            else
+                pass "sandbox cannot launch as the host user (bundle open exit $status: $(printf '%s' "$output" | tr '\n' ' '); open -a Calculator exit $calc_status: $(printf '%s' "$calc_output" | tr '\n' ' '))"
+            fi
+        fi
+        # Cleanup runs as the sandbox user in nested runs, where /Users/Shared is
+        # sticky: the marker can be unremovable, so remove the bundle first and
+        # let the marker removal fail quietly instead of aborting under errexit.
+        rm -rf "$app"
+        rm -f "$marker" 2>/dev/null || true
+    }
+    queue_test test_sandbox_cannot_launch_as_host
+
+    # The profile on disk is root owned and rewritten only on a rebuild, so a
+    # policy change would never reach an installed machine. profile_needs_rewrite
+    # compares the version line sv writes with the one on disk, and a machine
+    # with no profile at all needs a rewrite too.
+    test_sv_rewrites_stale_sandbox_profile() {
+        local current dir fn got stale version
+        fn=$(sed -n '/^profile_needs_rewrite() {$/,/^}$/p' "$SV_BASE")
+        if [[ -z "$fn" ]]; then
+            fail "sv rewrites a stale sandbox profile" "profile_needs_rewrite in sv" "function not found"
+            return
+        fi
+        # Read the version sv stamps, so bumping the constant cannot leave this
+        # test asserting a number sv no longer writes.
+        version=$(sed -n 's/^readonly SV_SANDBOX_PROFILE_VERSION="\([0-9][0-9]*\)"$/\1/p' "$SV_BASE")
+        if [[ -z "$version" ]]; then
+            fail "sv rewrites a stale sandbox profile" \
+                "readonly SV_SANDBOX_PROFILE_VERSION in sv" "not found"
+            return
+        fi
+        got=$(
+            SB_PROFILE_VERSION=2 SESSION_DIR_UNDER_TEST=1 \
+            /bin/bash -c "$fn"'
+                printf "%s" "$(profile_needs_rewrite "$1" /dev/null; echo $?)"
+            ' _ "$version"
+        )
+        if [[ "$got" != "0" ]]; then
+            fail "sv rewrites a stale sandbox profile" "a profile with no version line needs a rewrite" "$got"
+            return
+        fi
+        # /dev/null stops at the missing-file branch, so the pair below is what
+        # runs the compare: a profile carrying another version needs a rewrite,
+        # one carrying this version does not.
+        dir="$(mktemp -d)"
+        stale="$dir/stale.sb"
+        current="$dir/current.sb"
+        printf ';; sv-profile-version: %s\n' "$((version - 1))" > "$stale"
+        printf ';; sv-profile-version: %s\n' "$version" > "$current"
+        got=$(
+            /bin/bash -c "$fn"'
+                printf "%s%s" \
+                    "$(profile_needs_rewrite "$3" "$1"; echo $?)" \
+                    "$(profile_needs_rewrite "$3" "$2"; echo $?)"
+            ' _ "$stale" "$current" "$version"
+        )
+        rm -rf "$dir"
+        if [[ "$got" != "01" ]]; then
+            fail "sv rewrites a stale sandbox profile" \
+                "01 (a profile at another version needs a rewrite, one at $version does not)" "$got"
+        else
+            pass "sv rewrites a stale sandbox profile"
+        fi
+    }
+    queue_test test_sv_rewrites_stale_sandbox_profile
+
+    # The merge copies $SHARED_WORKSPACE/user over the deployed home, and the
+    # sandbox user can write that source. It must not be able to overwrite the
+    # prompt text the wrappers read (sv_tool_prompt -> --append-system-prompt)
+    # or the script that assembles it, while still being able to stage its own
+    # tools under user/bin.
+    test_configure_merge_leaves_prompts_alone() {
+        local workdir home shared fn run output status
+        workdir="$(mktemp -d)"
+        home="$workdir/home"
+        shared="$workdir/shared"
+        mkdir -p "$home/bin/prompts" "$shared/user/bin/prompts"
+        printf 'TRUSTED\n' > "$home/bin/prompts/browser.md"
+        printf 'TRUSTED\n' > "$home/bin/sv-tool-prompts.sh"
+        printf 'POISONED\n' > "$shared/user/bin/prompts/browser.md"
+        printf 'POISONED\n' > "$shared/user/bin/sv-tool-prompts.sh"
+        printf '#!/bin/sh\n' > "$shared/user/bin/mytool"
+
+        fn=$(sed -n '/^merge_user_config() {$/,/^}$/p' "$SCRIPT_DIR/../guest/home/configure")
+        if [[ -z "$fn" ]]; then
+            fail "configure merge leaves the prompt files alone" \
+                "merge_user_config in guest/home/configure" "function not found"
+            rm -rf "$workdir"; return
+        fi
+
+        run="$workdir/run"
+        {
+            echo '#!/bin/bash'
+            echo 'set -Eeuo pipefail'
+            echo 'debug() { :; }'
+            printf '%s\n' "$fn"
+            echo 'merge_user_config'
+        } > "$run"
+        chmod +x "$run"
+
+        set +e
+        output=$(HOME="$home" SHARED_WORKSPACE="$shared" /bin/bash "$run" 2>&1)
+        status=$?
+        set -e
+        if [[ "$status" -ne 0 ]]; then
+            fail "configure merge leaves the prompt files alone" \
+                "merge succeeds" "exit $status: $output"
+            rm -rf "$workdir"; return
+        fi
+
+        if [[ "$(cat "$home/bin/prompts/browser.md")" != 'TRUSTED' ]]; then
+            fail "configure merge leaves the prompt files alone" \
+                "prompt text stays the deployed copy" \
+                "got: $(cat "$home/bin/prompts/browser.md")"
+        elif [[ "$(cat "$home/bin/sv-tool-prompts.sh")" != 'TRUSTED' ]]; then
+            fail "configure merge leaves the prompt files alone" \
+                "the prompt assembly script stays the deployed copy" \
+                "got: $(cat "$home/bin/sv-tool-prompts.sh")"
+        elif [[ ! -f "$home/bin/mytool" ]]; then
+            fail "configure merge leaves the prompt files alone" \
+                "user/bin is still merged" "user/bin/mytool missing"
+        else
+            pass "configure merge leaves the prompt files alone"
+        fi
+        rm -rf "$workdir"
+    }
+    queue_test test_configure_merge_leaves_prompts_alone
     # git runs several config values as commands on the host (core.fsmonitor,
     # core.sshCommand, core.hooksPath, core.pager, [filter] drivers). The clone
     # directory is guest-writable, and so is any workspace path passed as the
@@ -1715,59 +1920,68 @@ STUB
         fi
         rm -rf "$base"
     }
-    queue_test test_workspace_readme_created_when_missing
+    queue_test test_workspace_readme_write_survives_directory_symlink
+    # The bridge runs as the host user and gives `iosef` a working directory to
+    # keep its state in. That directory sits under $SHARED_WORKSPACE/_sandvault,
+    # which the sandbox user can write, so the sandbox can put a symlink there
+    # and make a host process write wherever it points. The bridge must keep its
+    # own working directory host-only, and keep writing screenshots to the
+    # shared one so the sandbox can still fetch them.
+    test_ios_bridge_host_work_dir() {
+        local workdir output status
+        workdir="$(mktemp -d)"
 
-    # An existing README is left alone: the host does not read or rewrite it.
-    test_workspace_readme_existing_left_alone() {
-        local name="workspace README left alone when present" base dest out
-        base="$(new_readme_scratch)"; dest="$base/ws/SANDVAULT-README.md"
-        printf 'user edited\n' > "$dest"
-        if ! out=$(run_readme_write "$base/ws"); then
-            fail "$name" "write succeeds" "$out"
-        elif [[ "$(cat "$dest")" != 'user edited' ]]; then
-            fail "$name" "existing README unchanged" "README was rewritten"
-        else
-            pass "$name"
-        fi
-        rm -rf "$base"
-    }
-    queue_test test_workspace_readme_existing_left_alone
+        set +e
+        output=$(/usr/bin/python3 - "$SCRIPT_DIR/../helpers/sv-ios-bridge" "$workdir" <<'PY' 2>&1
+import importlib.util, os, sys, tempfile
+from importlib.machinery import SourceFileLoader
 
-    # The sandbox can plant a link after the existence check. The rename must
-    # replace it rather than write through it.
-    test_workspace_readme_racing_file_symlink() {
-        local name="workspace README racing file symlink replaced" base dest out
-        base="$(new_readme_scratch)"; dest="$base/ws/SANDVAULT-README.md"
-        if ! out=$(run_readme_write "$base/ws" "ln -s '$base/host-private' '$dest'"); then
-            fail "$name" "write succeeds" "$out"
-        elif [[ "$(cat "$base/host-private")" != 'HOST PRIVATE DATA' ]]; then
-            fail "$name" "symlink target untouched" "target was overwritten by the host"
-        elif [[ -L "$dest" || ! -f "$dest" ]]; then
-            fail "$name" "link replaced by the README" "destination is still a link or missing"
-        else
-            pass "$name"
-        fi
-        rm -rf "$base"
-    }
-    queue_test test_workspace_readme_racing_file_symlink
+bridge_path, scratch = sys.argv[1], sys.argv[2]
+loader = SourceFileLoader("sv_ios_bridge", bridge_path)
+spec = importlib.util.spec_from_loader("sv_ios_bridge", loader)
+mod = importlib.util.module_from_spec(spec)
+loader.exec_module(mod)
 
-    # Same race with a link to a *directory*: plain "mv" would move the README
-    # into the host directory and leave the link in place.
-    test_workspace_readme_racing_directory_symlink() {
-        local name="workspace README racing directory symlink replaced" base dest out
-        base="$(new_readme_scratch)"; dest="$base/ws/SANDVAULT-README.md"
-        if ! out=$(run_readme_write "$base/ws" "ln -s '$base/host-dir' '$dest'"); then
-            fail "$name" "write succeeds" "$out"
-        elif [[ -n "$(/bin/ls -A "$base/host-dir")" ]]; then
-            fail "$name" "nothing written inside the linked host directory" "host directory gained: $(/bin/ls -A "$base/host-dir")"
-        elif [[ -L "$dest" || ! -f "$dest" ]]; then
-            fail "$name" "link replaced by the README" "destination is still a link or missing"
+for name in ("prepare_host_work_dir", "screenshot_path"):
+    if not hasattr(mod, name):
+        sys.exit(f"{name} missing from the bridge")
+
+work = mod.prepare_host_work_dir(scratch)
+if not os.path.isdir(work) or os.path.islink(work):
+    sys.exit(f"host work dir is not a real directory: {work}")
+mode = os.stat(work).st_mode & 0o777
+if mode != 0o700:
+    sys.exit(f"host work dir mode is {oct(mode)}, want 0o700")
+
+planted = os.path.join(scratch, "planted-target")
+os.mkdir(planted)
+os.rmdir(work)  # the guest replaces the host's dir with a link to its own
+os.symlink(planted, work)
+work = mod.prepare_host_work_dir(scratch)
+if os.path.islink(work) or not os.path.isdir(work):
+    sys.exit("a symlink planted at the work dir was followed instead of replaced")
+if os.listdir(planted):
+    sys.exit(f"the planted target gained files: {os.listdir(planted)}")
+
+mod.SCRATCH_DIR = scratch
+os.chdir(tempfile.gettempdir())
+shot = mod.screenshot_path("screenshot-pixels", "png")
+if not shot.startswith(scratch + os.sep):
+    sys.exit(f"screenshot path {shot} escapes the shared scratch dir {scratch}")
+print("ok")
+PY
+)
+        status=$?
+        set -e
+
+        if [[ "$status" -ne 0 ]]; then
+            fail "iOS bridge keeps its working directory host-only" "host-only work dir" "$output"
         else
-            pass "$name"
+            pass "iOS bridge keeps its working directory host-only"
         fi
-        rm -rf "$base"
+        rm -rf "$workdir"
     }
-    queue_test test_workspace_readme_racing_directory_symlink
+    queue_test test_ios_bridge_host_work_dir
 
     # Should be able to access home directory
     queue_test assert_sandbox_exit_code "sv s -- touch $SANDVAULT_HOME/README.md" 0 touch -c "$SANDVAULT_HOME/README.md"
@@ -1907,7 +2121,13 @@ case "$1" in
                         ;;
                     add)
                         shift 3
-                        shift # public key path, unused by the stub
+                        # Keep the key body the script handed us, so a test can
+                        # assert what was uploaded rather than just that an add
+                        # happened.
+                        if [[ -f "$1" ]]; then
+                            cp "$1" "$GH_STUB_STATE.received"
+                        fi
+                        shift # public key path
                         title=""
                         write=false
                         while [[ $# -gt 0 ]]; do
@@ -2206,6 +2426,29 @@ STUB_EOF
             return
         fi
 
+        # The upload must be bound to what was verified: a path inside the
+        # guest-writable workspace can be swapped between the check and the
+        # `gh` call.
+        if [[ "$add_line" == *"$CLONE_WORKSPACE"* ]]; then
+            fail "sv-clone -k uploads the verified copy" \
+                "the add line names a host-private file, not a workspace path" \
+                "$add_line"
+            return
+        fi
+
+        # The key that reached gh must be the one derived from the private half,
+        # not whatever sits in the guest-writable workspace at upload time.
+        if [[ ! -f "$state_file.received" ]]; then
+            fail "sv-clone -k uploads the verified key" "gh received a key body" "nothing recorded"
+            return
+        fi
+        if [[ "$(cat "$state_file.received")" != "$(ssh-keygen -y -f "$key_file" | awk '{print $1, $2}')" ]]; then
+            fail "sv-clone -k uploads the verified key" \
+                "uploaded body matches ssh-keygen -y of the private half" \
+                "$(cat "$state_file.received")"
+            return
+        fi
+
         # Re-running -k against a repo whose key is already registered
         # (per the stub's state file) should still (re)activate the SSH
         # origin and sshCommand — idempotent, not a silent no-op. Remove
@@ -2237,6 +2480,104 @@ STUB_EOF
         rm -rf "$stub_dir" "$log_file" "$state_file"
     }
     queue_test test_sv_clone_dash_k_read_only
+    wait_for_all_running_tests
+
+    # The deploy key pair lives in the shared workspace, which the sandbox user
+    # can write. Verifying that the two halves agree catches a replaced public
+    # half; comparing them against a host-owned record catches both halves being
+    # replaced. Either way the host must not hand a key it did not create to
+    # `gh repo deploy-key add`, because it uploads with the user's token.
+    test_sv_clone_deploy_key_is_verified() {
+        local workdir body fn run record_dir priv other rc
+        body=$(sed -n '/^deploy_public_body() {$/,/^}$/p' "$SCRIPT_DIR/../sv-clone")
+        fn=$(sed -n '/^verify_deploy_keypair() {$/,/^}$/p' "$SCRIPT_DIR/../sv-clone")
+        if [[ -z "$body" || -z "$fn" ]]; then
+            fail "deploy key is verified before use" \
+                "deploy_public_body and verify_deploy_keypair in sv-clone" "function not found"
+            return
+        fi
+
+        workdir="$(mktemp -d)"; record_dir="$(mktemp -d)"
+        priv="$workdir/deploy_probe"
+        ssh-keygen -t ed25519 -f "$priv" -N "" -q -C "sandvault-deploy-probe@test"
+
+        run="$workdir/run"
+        {
+            echo '#!/bin/bash'
+            echo 'set -Eeuo pipefail'
+            echo 'abort() { echo "ABORT: $*" >&2; exit 1; }'
+            echo 'debug() { :; }'
+            echo 'info() { :; }'
+            echo 'warn() { echo "WARN: $*" >&2; }'
+            printf '%s\n' "$body"
+            printf '%s\n' "$fn"
+            echo 'verify_deploy_keypair'
+            echo 'cp "$DEPLOY_KEY_PUB_VERIFIED" "$PUBLISHED_COPY"'
+            echo 'stat -f "%Lp" "$DEPLOY_KEY_PUB_VERIFIED" > "$PUBLISHED_MODE"'
+        } > "$run"
+        chmod +x "$run"
+        verify() {
+            REPOSITORY_NAME=probe \
+                DEPLOY_KEY_DIR="$workdir" \
+                DEPLOY_KEY_PRIV="$priv" \
+                DEPLOY_KEY_PUB="$priv.pub" \
+                DEPLOY_KEY_RECORD_DIR="$record_dir" \
+                PUBLISHED_COPY="$workdir/published" \
+                PUBLISHED_MODE="$workdir/published.mode" \
+                /bin/bash "$run" 2>&1
+        }
+
+        # 1. A pair the host just generated, with no record yet: accepted, and
+        #    the record adopted so later runs can spot a replacement.
+        rc=0; verify >"$workdir/out1" || rc=$?
+        if (( rc != 0 )); then
+            fail "deploy key is verified before use" \
+                "a freshly generated pair verifies" "exit $rc: $(cat "$workdir/out1")"
+            rm -rf "$workdir" "$record_dir"; return
+        fi
+        if [[ ! -f "$record_dir/deploy_probe.pub" ]]; then
+            fail "deploy key is verified before use" \
+                "host-owned record written on first sight" "no record"
+            rm -rf "$workdir" "$record_dir"; return
+        fi
+        if [[ "$(cat "$workdir/published" 2>/dev/null)" != "$(ssh-keygen -y -f "$priv" | awk '{print $1, $2}')" ]]; then
+            fail "deploy key is verified before use" \
+                "the published key is the one derived from the private half" \
+                "$(cat "$workdir/published" 2>/dev/null)"
+            rm -rf "$workdir" "$record_dir"; return
+        fi
+        if [[ "$(cat "$workdir/published.mode" 2>/dev/null)" != "600" ]]; then
+            fail "deploy key is verified before use" \
+                "published key is host-private (0600)" \
+                "$(cat "$workdir/published.mode" 2>/dev/null)"
+            rm -rf "$workdir" "$record_dir"; return
+        fi
+
+        # 2. Public half replaced, private half untouched (the cheap attack).
+        other="$(mktemp -d)"
+        ssh-keygen -t ed25519 -f "$other/plant" -N "" -q -C "sandbox@plant"
+        cp "$other/plant.pub" "$priv.pub"
+        rc=0; verify >"$workdir/out2" || rc=$?
+        if (( rc == 0 )); then
+            fail "deploy key is verified before use" \
+                "a replaced public half is rejected" "accepted it"
+            rm -rf "$workdir" "$record_dir" "$other"; return
+        fi
+
+        # 3. Both halves replaced, so they agree with each other but not with
+        #    the host's record (the attack that a pair check alone misses).
+        cp "$other/plant" "$priv"; cp "$other/plant.pub" "$priv.pub"
+        rc=0; verify >"$workdir/out3" || rc=$?
+        if (( rc == 0 )); then
+            fail "deploy key is verified before use" \
+                "a pair that disagrees with the host record is rejected" "accepted it"
+            rm -rf "$workdir" "$record_dir" "$other"; return
+        fi
+
+        pass "deploy key is verified before use (pair, then host record)"
+        rm -rf "$workdir" "$record_dir" "$other"
+    }
+    queue_test test_sv_clone_deploy_key_is_verified
     wait_for_all_running_tests
 
     # Test that -w generates a deploy key with write access.
